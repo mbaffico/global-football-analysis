@@ -7,7 +7,7 @@ This project analyzes football match data from leagues around the world to uncov
 - `/figures/` – Visualizations and maps
 - `/studies/` – Individual analysis modules (e.g., home win %, league comparisons)
 - `/reports/` – Markdown or HTML reports
-- 
+
 ### 📊 Featured Study: No Place like Home?
 **A data-driven look at how impactful home advantage truly is in football.**
 
