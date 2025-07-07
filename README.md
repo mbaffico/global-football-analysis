@@ -2,7 +2,7 @@
 This project analyzes football match data from leagues around the world to uncover meaningful trends in team performance and match outcomes. Leveraging R and spatial visualization tools, it draws insights from thousands of matches played across dozens of countries.
 
 ## 📂 Repository Structure
-- `/data/` – Raw and cleaned datasets
+- `/data/` – Raw datasets
 - `/scripts/` – R scripts for data wrangling and analysis
 - `/figures/` – Visualizations and maps
 - `/studies/` – Individual analysis modules (e.g., home win %, league comparisons)
