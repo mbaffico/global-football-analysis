@@ -10,6 +10,7 @@ This project analyzes football match data from leagues around the world to uncov
 - 
 ### 📊 Featured Study: No Place like Home?
 **A data-driven look at how impactful home advantage truly is in football.**
+
 This study visualizes the percentage of matches won by the home team across 27 countries.
 
 ## 📦 Dependencies / Setup
