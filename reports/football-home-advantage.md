@@ -1,5 +1,5 @@
 # No Place like Home?
-### Exploring the Significance and Impact of Home Advantage in Football
+## Exploring the Significance and Impact of Home Advantage in Football
 
 ### Introduction
 The concept of home advantage in sports is a long-standing one: the belief that teams playing on their home turf are more likely to win than their visiting opponents. The reasons are varied and often intangible—ranging from crowd influence and referee bias to travel fatigue and familiarity with the playing surface.
