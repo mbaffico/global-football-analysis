@@ -5,7 +5,6 @@ This project analyzes football match data from leagues around the world to uncov
 - `/data/` – Raw datasets
 - `/scripts/` – R scripts for data wrangling and analysis
 - `/figures/` – Visualizations and maps
-- `/studies/` – Individual analysis modules (e.g., home win %, league comparisons)
 - `/reports/` – Markdown or HTML reports
 
 ### 📊 Featured Study: No Place like Home?
