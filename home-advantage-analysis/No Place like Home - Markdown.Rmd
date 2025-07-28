@@ -1,0 +1,1099 @@
+---
+title: "No Place Like Home?"
+subtitle: "Exploring the Significance and Impact of Home Advantage in Football"
+author: "Martin Baffico Balharry"
+date: "2025-07-07"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggrepel)
+library(knitr)
+library(kableExtra)
+library(broom)
+library(psych)
+library(jtools)
+football_matches <- read.csv("C:/Users/night/OneDrive/Documents/Matches.csv")
+team_elo <- read.csv("C:/Users/night/OneDrive/Documents/EloRatings.csv")
+```
+
+### Introduction
+The concept of home advantage in sports is a long-standing one: the belief that teams playing on their home turf are more likely to win than their visiting opponents. The reasons are varied and often intangible,ranging from crowd influence and referee bias to travel fatigue and familiarity with the playing surface.
+
+Football, in particular, is renowned for its passionate crowds and emotionally invested fans. In many regions, supporters weave their clubs into their identity and daily life. Matchday atmospheres are electric,filled with chants, songs, and, in some countries, full marching bands. Nowhere is this more evident than in South America, where fan culture is both fierce and iconic. Clubs like Boca Juniors boast legendary supporter groups such as “La 12,” and in Argentina, the absence of away fans combined with the overwhelming presence of home supporters is often cited as a decisive factor in match outcomes.
+
+This study aims to quantify that belief: does playing at home truly offer a measurable advantage? And if so, how significant is it?
+
+#### Business Task
+To identify which regions, leagues, and teams exhibit the highest home win percentages, and to investigate the factors that may contribute to home advantage—such as team Elo ratings.
+
+### Data Overview
+The data used for this study is the [Club Football Match Data (2000 - 2025)](https://www.kaggle.com/datasets/adamgbor/club-football-match-data-2000-2025), published on Kaggle by Adam Gábor. The dataset is made available under the [MIT License](https://www.mit.edu/~amini/LICENSE.md) allowing for reuse and modification with proper attribution.
+
+It is important to note that the Kaggle dataset includes two files: `Matches`, which contains historical match results and statistics, and `EloRatings`, which provides historical Elo (relative team strength) ratings for club teams. Match results and statistics are taken from [Football-Data.co.uk](https://www.football-data.co.uk/), while the Elo ratings are sourced from [ClubElo](http://clubelo.com/).
+
+Each dataset is provided in CSV format. The `Matches` dataset is particularly rich, containing 48 columns that span match metadata, team names, scores, and betting odds—plenty to explore. In contrast, the `EloRatings` dataset is more concise, with just 4 columns tracking team names, dates, and Elo scores over time.
+
+To better understand the structure of each dataset, the following code chunks display their formatting using the `glimpse` function.
+
+**<u>Matches Data:</u>**
+```{r Matches glimpse}
+glimpse(football_matches)
+```
+
+**<u>Team Elo Data:</u>**
+```{r Elo glimpse}
+glimpse(team_elo)
+```
+
+Overall, the data appears to have appropriate data types assigned. One inconsistency, however, is that the date column is stored as a String object in both datasets. This discrepancy may require standardization to ensure compatibility during time-based operations or joins.
+
+```{r Data date str to date}
+team_elo$date <- as.Date(team_elo$date)
+
+football_matches$MatchDate <- as.Date(football_matches$MatchDate)
+```
+
+I also noticed naming inconsistencies and duplicate entries in the dataset. For instance, the team ‘Ajax’ appears more than once due to stray whitespace characters in its name.
+```{r validating_data}
+football_matches %>%
+  filter(str_detect(HomeTeam, "Ajax")) %>%
+  distinct(HomeTeam)
+
+# I will proceed to remove white spaces to clean the data.
+
+football_matches$HomeTeam <- trimws(football_matches$HomeTeam)
+```
+
+### Considerations
+While this study focuses on home advantage, several contextual limitations should be acknowledged.
+
+1. **Stadium ownership and identity:** Not all teams play in exclusively owned stadiums. In some leagues, such as Serie A, clubs like Roma and Lazio share venues like the Stadio Olimpico. In lower divisions, teams often rent stadiums rather than own them. While they still treat these venues as their “home,” the concept of territorial advantage may be diluted.
+
+2. **Impact of COVID-19 crowd restrictions:** During the early stages of the pandemic, many matches were played behind closed doors. The absence of a live home crowd likely diminished psychological and performance-based advantages typically associated with home fixtures. This anomaly will be studied in later phases of the study.
+
+### Data Validation and Cleaning
+Since the dataset originates from a third-party source, it is essential to review it for consistency, completeness, and accuracy. A manual spot check of 20 randomly selected matches confirmed that the reported scores and match details align with official records. To further assess data quality, a systematic check for missing or incomplete entries was conducted to estimate the extent of data gaps across the dataset.
+```{r NA Count}
+## Check the data
+colSums(is.na(football_matches))
+```
+
+A significant number of NA values are present across multiple variables, which, while concerning, is not entirely unexpected. The dataset spans back to the year 2000, a period when data collection technologies and standards were less robust, particularly for detailed match statistics. To ensure data quality and analytical relevance, this study will focus on matches from 2010 onward. Additionally, columns that do not contribute meaningfully to the business task will be excluded to streamline the analysis.
+
+```{r Cleaning and Filtering Matches}
+## Cleaning the data to remove unwanted columns and filtering for matches after 2010
+football_matches_trimmed <- football_matches %>% 
+  select(Division, MatchDate, HomeTeam, AwayTeam, FTHome, FTAway, FTResult, HTHome, 
+         HTAway, HTResult, HomeShots, HomeCorners, AwayShots, AwayCorners, HomeTarget,
+         AwayTarget, HomeElo, AwayElo, HomeFouls, AwayFouls, HomeYellow, AwayYellow,
+         HomeRed, AwayRed) %>% 
+  filter(MatchDate >= "2010-01-01")
+```
+
+With a more focused dataset, the analysis is now limited to variables directly relevant to assessing home advantage. By filtering for matches played from 2010 onward and removing extraneous columns, we reduce noise and ensure that the remaining data aligns with the core objectives of the study:
+```{r Preview Matches}
+head(football_matches_trimmed)
+```
+
+In football, many countries host multiple professional leagues, often organized into divisions. While the `Matches` dataset includes a `Division` column, it does not explicitly indicate the country in which each match took place. Adding a column that maps each division to its corresponding country would enable more meaningful aggregation—allowing for analysis of how home advantage varies across national contexts.
+
+```{r Create Country Column}
+football_matches_new <- football_matches_trimmed %>% 
+  mutate( ## The mutate function modifies the existing dataset.
+    Country = case_when(   
+      Division %in% c("E0", "E1", "E2", "E3", "EC") ~ "England",
+      Division %in% c("ARG") ~ "Argentina",
+      Division %in% c("SP1", "SP2") ~ "Spain",
+      Division %in% c("AUT") ~ "Austria",
+      Division %in% c("B1") ~ "Belgium",
+      Division %in% c("BRA") ~ "Brazil",
+      Division %in% c("CHN") ~ "China",
+      Division %in% c("D1", "D2") ~ "Germany",
+      Division %in% c("DEN") ~ "Denmark",
+      Division %in% c("F1", "F2") ~ "France",
+      Division %in% c("FIN") ~ "Finland",
+      Division %in% c("G1") ~ "Greece",
+      Division %in% c("I1", "I2") ~ "Italy",
+      Division %in% c("IRL") ~ "Ireland",
+      Division %in% c("JAP") ~ "Japan",
+      Division %in% c("MEX") ~ "Mexico",
+      Division %in% c("N1") ~ "Netherlands",
+      Division %in% c("NOR") ~ "Norway",
+      Division %in% c("P1") ~ "Portugal",
+      Division %in% c("POL") ~ "Poland",
+      Division %in% c("ROM") ~ "Romania",
+      Division %in% c("RUS") ~ "Russia",
+      Division %in% c("SC0", "SC1", "SC2", "SC3") ~ "Scotland",
+      Division %in% c("SUI") ~ "Switzerland",
+      Division %in% c("SWE") ~ "Sweden",
+      Division %in% c("T1") ~ "Turkey",
+      Division %in% c("USA") ~ "United States"
+    )
+  )
+```
+
+
+### Analysis
+Let’s start by looking at home win rates by country:
+```{r Home Win Rate per Country}
+home_wins_overview <- football_matches_new %>% 
+  group_by(Country) %>% 
+  summarise(
+    total_matches = n(),
+    home_wins = sum(FTResult == "H"),
+    home_win_pct = round((home_wins / total_matches) * 100, 1)
+  ) %>% 
+  arrange(desc(home_win_pct))
+home_wins_overview %>% 
+  rename(
+    "Total Matches" = total_matches,
+    "Home Wins" = home_wins,
+    "Home Win Percentage" = home_win_pct
+  ) %>% 
+  kable()
+```
+
+Interestingly, the country with the strongest home advantage appears to be the United States. This is notable given that football (soccer) has historically had a smaller cultural footprint in the U.S. compared to countries in Europe or South America, where fan engagement tends to be more intense and emotionally charged.
+
+However, it's important to note that the home win percentage reported here does not account for draws. While the win rate may initially seem low, including draws in the calculation, depending on how they’re interpreted,could significantly alter the perceived strength of home advantage.
+
+Visualizing home win percentages by country can help contextualize where home advantage is most pronounced. A geographic representation adds dimensionality to the analysis, making it easier to identify regional patterns at a glance.
+
+```{r Home_Win_Map}
+## First, let's create a world map to place it in.
+world <- ne_countries(scale = "medium", returnclass = "sf")
+home_wins_map <- home_wins_overview %>% ## Since the map doesn't recognize England and Scotland, I have to use UK.
+  mutate(Country = case_when(
+    Country %in% c("England", "Scotland") ~ "United Kingdom",
+    TRUE ~ Country
+  ))
+
+world_map <- world %>%
+  left_join(home_wins_map, by = c("name_ciawf" = "Country"))
+
+## I'll define a color palette for the map
+rose_palette <- c(
+  "#fff1e0",  # light cream
+  "#f7c6d0",  # soft pink
+  "#e88abf",  # magenta
+  "#b04aa1",  # deep purple
+  "#3b2c6e"   # navy blue
+)
+
+ggplot(world_map) +
+  geom_sf(aes(fill = home_win_pct), color = "gray", size = 0.1) +
+  scale_fill_gradientn(colors = rose_palette, na.value = "gray90") +
+  labs(
+    title = "Home Win % By Country",
+    fill = "Home Win %",
+    caption = "Source: Football-Data.co.uk"
+  ) +
+  theme_minimal()
+```
+
+Other countries with a strong percentage of home wins include Brazil, Spain, and Sweden. Interestingly, Argentina stands out with a relatively low home win percentage, which is surprising given expectations. Overall, there doesn’t appear to be a strong correlation between continent and home win percentage, as each continent features a wide range of countries with varying success rates at home. This suggests that factors beyond culture and geography may influence the concept of home advantage. However, how does the picture change when we consider both wins and draws together?
+
+```{r Home Undefeated}
+home_undefeated_overview <- football_matches_new %>% 
+  group_by(Country) %>% 
+  summarise(
+    total_matches = n(),
+    home_wins = sum(FTResult == "H"),
+    draws = sum(FTResult == "D"),
+    undefeated_pct = round(((home_wins + draws) / total_matches) * 100, 1)
+  ) %>% 
+  arrange(desc(undefeated_pct))
+
+home_undefeated_overview %>% 
+  rename(
+    "Total Matches" = total_matches,
+    "Wins" = home_wins,
+    "Draws" = draws,
+    "Undefeated Percent" = undefeated_pct
+  ) %>% 
+  kable()
+```
+
+When draws are included in the equation, the picture changes dramatically. Argentina, which ranked 19th in home win percentage, jumps to 4th place when looking at home undefeated percentage. Italy also sees a significant improvement, while Portugal experiences a notable drop, falling 10 places. Japan has the weakest record in both home win percentage and home undefeated percentage, suggesting that home advantage has the least impact there—or perhaps matters the least.
+
+```{r Home_Undefeated_Map}
+
+home_undefeated_map <- home_undefeated_overview %>%
+  mutate(
+    Country = case_when(
+      Country %in% c("England", "Scotland") ~ "United Kingdom",
+      TRUE ~ Country
+    )
+  )
+
+world_map_undefeated <- world %>% 
+  left_join(home_undefeated_map, by = c("name_ciawf" = "Country"))
+
+ggplot(world_map_undefeated) +
+  geom_sf(aes(fill = undefeated_pct), color = "gray", size = 0.1) +
+  scale_fill_gradientn(colors = rose_palette, na.value = "gray90") +
+  labs(
+    title = "Home Undefeated % by Country",
+    subtitle = "Wins and Draws on Home Turf",
+    fill = "Undefeated %",
+    caption = "Source: Football-Data.co.uk"
+  ) +
+  theme_minimal()
+```
+
+In the updated choropleth map, South America appears significantly darker than before, visually reinforcing the fan-driven pride often associated with the region’s stadium atmosphere. Spain and France also show strong home records. While many South American supporters boast about having the strongest crowds and most formidable home-field advantage, the data suggests that this edge doesn’t necessarily translate into more wins. Instead, the real advantage seems to lie in helping teams avoid defeat.
+
+That said, each league has its own style of play—some more fragmented or physical than others—which can shape how easy or difficult it is to score. Let's evaluate how win percentages and undefeated runs look for leagues, and how many goals home teams score in each of them.
+
+```{r league_overview}
+league_names <- football_matches_new %>% 
+  rename(League = Division) %>% # Rename column
+  mutate(                       # Renaming the leagues so that they're more intuitive
+    League = case_when(
+      League == "BRA" ~ "Serie A (BRA 1)",
+      League == "USA" ~ "MLS (USA 1)",
+      League == "SP2" ~ "LaLiga 2 (ESP 2)",
+      League == "I2" ~ "Serie B (ITA 2)",
+      League == "ARG" ~ "Primera Division (ARG 1)",
+      League == "F2" ~ "Ligue 2 (FRA 2)",
+      League == "G1" ~ "Super League (GRC 1)",
+      League == "SP1" ~ "LaLiga (ESP 1)",
+      League == "MEX" ~ "Liga MX (MEX 1)",
+      League == "NOR" ~ "Eliteserien (NOR 1)",
+      League == "T1" ~ "Super Lig (TUR 1)",
+      League == "D2" ~ "2. Bundesliga (DEU 2)",
+      League == "F1" ~ "Ligue 1 (FRA 1)",
+      League == "POL" ~ "Ekstraklasa (POL 1)",
+      League == "ROM" ~ "SuperLiga (ROU 1)",
+      League == "CHN" ~ "Super League (CHN 1)",
+      League == "E0" ~ "Premier League (ENG 1)",
+      League == "B1" ~ "Pro League (BEL 1)",
+      League == "N1" ~ "Eredivisie (NLD 1)",
+      League == "I1" ~ "Serie A (ITA 1)",
+      League == "FIN" ~ "Veikkausliiga (FIN 1)",
+      League == "RUS" ~ "Russian Premier League (RUS 1)",
+      League == "D1" ~ "Bundesliga (DEU 1)",
+      League == "E2" ~ "League One (ENG 3)",
+      League == "DEN" ~ "Superliga (DEN 1)",
+      League == "E1" ~ "EFL Championship (ENG 2)",
+      League == "E3" ~ "League Two (ENG 4)",
+      League == "SUI" ~ "Swiss Super League (SUI 1)",
+      League == "P1" ~ "Liga Portugal (POR 1)",
+      League == "SWE" ~ "Allsvenskan (SWE 1)",
+      League == "EC" ~ "National League (ENG 5)",
+      League == "SC1" ~ "Scottish Championship (SCO 2)",
+      League == "IRL" ~ "League of Ireland Premier Division (IRE 1)",
+      League == "AUT" ~ "Bundesliga (AUT 1)",
+      League == "SC0" ~ "Scottish Premiership (SCO 1)",
+      League == "SC3" ~ "Scottish League Two (SCO 4)",
+      League == "SC2" ~ "Scottish League One (SCO 3)",
+      League == "JAP" ~ "JFL (JPN 1)",
+      TRUE ~ League             # Fallback
+    ))
+
+# Create a summary for home results per league
+league_overview <- league_names %>% 
+  group_by(League) %>%          
+  summarise(            # Create the summary table
+    total_matches = n(),
+    home_wins = sum(FTResult == "H", na.rm = TRUE),
+    home_undefeated = sum(FTResult %in% c("H","D"), na.rm = TRUE),
+    win_pct = round((home_wins / total_matches) * 100, 1),
+    undefeated_pct = round((home_undefeated / total_matches) * 100, 1)
+  ) %>% 
+  arrange(desc(undefeated_pct))
+
+league_overview %>% 
+  rename(
+    "Total Matches" = total_matches,
+    "Home Wins" = home_wins,
+    "Undefeated Home Games" = home_undefeated,
+    "Win Percent" = win_pct,
+    "Undefeated Percent" = undefeated_pct
+  ) %>% 
+  kable()
+```
+
+As expected, Brazil and the United States continue to assert their home dominance, with both boasting over a 75% undefeated rate. Surprisingly, they’re closely followed by the Spanish and Italian second divisions, which outperform even their elite first-tier counterparts. Further down the rankings, France's Ligue 2 also shows stronger home resilience than Ligue 1. This trend suggests that second divisions, despite smaller stadiums and fewer marquee names, might benefit from tighter tactical setups or more localized fan intensity that makes them tougher to beat on home turf than their first division counterparts.
+
+### Home Advantage Across Leagues
+Let’s explore the undefeated percentages of home teams across each league, with a deeper look at how first and second divisions compare in terms of home resilience.
+
+```{r top_10_leagues}
+league_overview %>% 
+  slice_head(n = 10) %>% 
+  ggplot(aes(x = reorder(League, undefeated_pct), y = undefeated_pct, fill = League)) + 
+    geom_dotplot(
+      binaxis = "y",
+      dotsize = 1.5
+    ) +
+    scale_y_continuous(limits = c(65, 80)) +  # Adjust based on range 
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.title.y = element_text(
+        margin = margin(t = 0, r = 10, b = 0, l = 0)),
+      legend.position = "none"
+      ) +
+    labs(
+      title = "Top 10 Strongest Home Leagues",
+      subtitle = "League Performance Based on Wins and Draws at Home",
+      x = "League",
+      y = "Undefeated %",
+      caption = "Source: Football-Data.co.uk"
+    )
+```
+
+It’s worth noting that the undefeated percentages among the top 10 leagues are remarkably similar. Visually, the variation is subtle, with less than a 5% difference separating the highest and lowest values. This suggests that, despite their relative rankings, the home advantage across these leagues is fairly consistent—highlighting that even the 10th-ranked league maintains a competitive level of home resilience.
+
+But what about the gap between first and second divisions—does it reveal a more meaningful difference in home performance?
+
+```{r 1st_vs_2nd_division}
+league_overview %>% 
+  mutate(
+    Country = case_when(
+      League == "LaLiga (ESP 1)" ~ "Spain",
+      League == "LaLiga 2 (ESP 2)" ~ "Spain",
+      League == "Ligue 1 (FRA 1)" ~ "France",
+      League == "Ligue 2 (FRA 2)" ~ "France",
+      League == "Serie A (ITA 1)" ~ "Italy",
+      League == "Serie B (ITA 2)" ~ "Italy",
+      League == "Premier League (ENG 1)" ~ "England",
+      League == "EFL Championship (ENG 2)" ~ "England",
+      League == "Bundesliga (DEU 1)" ~ "Germany",
+      League == "2. Bundesliga (DEU 2)" ~ "Germany",
+      League == "Scottish Premiership (SCO 1)" ~ "Scotland",
+      League == "Scottish Championship (SCO 2)" ~ "Scotland"
+      ),
+    Division = case_when(
+      League %in% c("LaLiga 2 (ESP 2)", "Ligue 2 (FRA 2)", "Serie B (ITA 2)",
+                      "EFL Championship (ENG 2)", "2. Bundesliga (DEU 2)",
+                      "Scottish Championship (SCO 2)") ~ "Second",
+      League %in% c("LaLiga (ESP 1)", "Ligue 1 (FRA 1)", "Serie A (ITA 1)",
+                      "Premier League (ENG 1)", "Bundesliga (DEU 1)",
+                      "Scottish Premiership (SCO 1)") ~ "First"
+    ) 
+  ) %>% 
+  filter(!is.na(Country), !is.na(Division)) %>% 
+  ggplot(aes(x = Division, y = undefeated_pct, group = Country)) +
+    geom_line(aes(color = Country), linewidth = 1.2) +
+    geom_point(aes(color = Country, size = 2.5)) +
+    geom_text_repel(aes(label = League, hjust = ifelse(Division == "First", 1.1, -0.1)), 
+                    size = 3, 
+                    box.padding = 0.3,
+                    direction = "y") +
+    labs(
+      title = "Climbing the Slope of Home Advantage",
+      subtitle = "Do Second Divisions Outshine Their First Tier Counterparts?",
+      x = NULL,
+      y = "Undefeated %",
+      caption = "Source: Football-Data.co.uk"
+    ) +
+    theme(
+      axis.title.x = element_blank(),
+      axis.ticks.x = element_blank(),
+    ) +
+    guides(size = "none")
+```
+
+This graph reveals a consistent trend: second divisions tend to exhibit stronger home advantage—measured by undefeated percentage—than their respective top-tier leagues.
+
+Many plausible explanations and factors could influence this unexpected phenomenon, such as:
+
+* **Competitive Parity:** Second divisions might have more evenly matched teams, leading to more tightly contested home games. This can boost home-field resilience
+* **Tactical Conservatism:** First division matches may lean more defensive or strategic, minimizing aggressive home push. In contrast, second division playstyles may embrace risk at home more freely.
+
+However, one consistent trend emerges across all leagues: *home teams tend to win more often than their away counterparts.*
+
+```{r home_vs_away_win_rates}
+league_win_pct <- league_names %>% 
+  group_by(League) %>% 
+  summarise(
+    total_matches = n(),
+    home_win_pct = round((sum(FTResult == "H", na.rm = TRUE) / total_matches) * 100),
+    home_goals = round(mean(FTHome, na.rm = TRUE), 1),
+    away_win_pct = round((sum(FTResult == "A", na.rm = TRUE) / total_matches) * 100),
+    away_goals = round(mean(FTAway, na.rm = TRUE), 1)
+  )
+
+league_win_pct %>% 
+  rename(
+    "Total Matches" = total_matches,
+    "Home Win Percent" = home_win_pct,
+    "Home Goals" = home_goals,
+    "Away Win Percent" = away_win_pct,
+    "Away Goals" = away_goals
+  ) %>% 
+  kable()
+
+# Plot it into a visual for comparison
+league_win_pct_plot <- league_win_pct %>% 
+  pivot_longer(cols = c(home_win_pct, away_win_pct),  # Format win % as long data
+               names_to = "Match_Type", 
+               values_to = "Win_Pct")
+
+ggplot(league_win_pct_plot, aes(x = League, y = Win_Pct, fill = Match_Type)) +
+  geom_col(position = "stack") +
+  coord_flip() +
+  labs(
+    title = "The Strength of Home",
+    subtitle = "Home and Away Win % per League",
+    fill = "Match Type",
+    y = "Win Percentage",
+    caption = "Source: Football-Data.co.uk"
+  ) +
+  theme(axis.text.y = element_text(size = 6))
+```
+
+
+### Home Advantage for Individual Teams
+One compelling angle to explore is the role of competitive parity in shaping home advantage across divisions. In first divisions, major powerhouses often dominate the landscape with unmatched depth and firepower, leaving smaller clubs at a tactical disadvantage, even when playing at home. For instance, a newly promoted team hosting Real Madrid is still unlikely to secure a draw or victory. However, home advantage may manifest in more subtle ways: increased possession, more shots on target, or a heightened pressing intensity, all indicators that don’t always reflect in the final scoreline. To better understand this dynamic, we can examine how home advantage varies at the team level and evaluate how much a club’s strength, quantified by metrics like Elo rating, diminishes or amplifies its reliance on home turf.
+
+Let's start looking by which are the teams with the strongest home records:
+
+```{r team_overview}
+team_overview <- league_names %>% 
+  group_by(HomeTeam) %>%
+  filter(n() > 38) %>%         # This filter will ensure that teams with less than ~1 season worth's of games will be removed
+  reframe(
+    League = paste(unique(League), collapse = ", "),
+    total_matches = n(),
+    home_wins = sum(FTResult == "H", na.rm = TRUE),
+    undefeated_matches = sum(FTResult %in% c("H", "D"), na.rm = TRUE),
+    undefeated_pct = round((undefeated_matches / total_matches) * 100, 1),
+    avg_home_goals = round(mean(FTHome), 1)
+  ) %>% 
+  arrange(desc(undefeated_pct))
+  
+team_overview %>% 
+  head(20) %>% 
+  mutate(
+    HomeTeam = ifelse(HomeTeam == "Rangers", paste0(HomeTeam, "*"), HomeTeam)) %>% 
+  rename(
+    "Total Matches" = total_matches,
+    "Home Wins" = home_wins,
+    "Undefeated Matches" = undefeated_matches,
+    "Undefeated Percent" = undefeated_pct,
+    "Average Home Goals" = avg_home_goals
+  ) %>% 
+  kable(caption = "Top 20 Teams with Strongest Home Record") %>% 
+  footnote(general = "* In 2012, Rangers were demoted to Scotland's lowest division due to financial problems and had to climb back up the Scottish league system",
+           footnote_as_chunk = TRUE) %>% 
+  kable_styling(bootstrap_options = "striped")
+
+```
+<hr>
+Interestingly, none of the top 20 teams with the strongest home records hail from North or South America—even though clubs in those regions boast some of the highest overall league-wide undefeated percentages. This suggests that while home teams in those leagues tend to perform well on average, individual dominance may be more evenly distributed across teams, with fewer standout juggernauts.
+
+In contrast, the top 20 list is populated by some of football’s most dominant powerhouses. For example, in Scotland, Celtic and Rangers rank 1st and 16th respectively. Historically, these two clubs have been far ahead of their domestic competitors in terms of success, financial resources, and squad depth, which helps explain their consistently strong home performance.
+
+As we move down the rankings, we observe the same pattern repeating: teams like Bayern Munich, Real Madrid, Ajax, and PSG all make an appearance. These clubs not only maintain formidable home records but also contribute to the suppression of home advantage for other teams within their leagues. Their dominance effectively creates a competitive imbalance, reinforcing the idea that elite clubs outperform their peers not just away from home, but especially on their own turf.
+
+Before analyzing the relationship between Elo ratings and home advantage, it's important to explore how key match statistics—like shots, goals, and corners—fluctuate based on venue.
+```{r prem_league_teams}
+# Evaluate a single season to minimize squad changes across time
+prem_league_home <- football_matches_trimmed %>% 
+  filter(between(MatchDate, as.Date("2023-08-11"), as.Date("2024-05-19")), Division == "E0") %>% 
+  mutate(
+    Team = HomeTeam) %>% 
+  group_by(Team) %>% 
+  summarise(
+    home_win_pct = round((sum(FTResult == "H") / n()) * 100, 1),
+    avg_home_goals = round(mean(FTHome), 1),
+    avg_goals_conceded_home = round(mean(FTAway), 1),
+    avg_shots_home = round(mean(HomeShots), 1),
+    avg_shots_conceded_home = round(mean(AwayShots), 1),
+    avg_corners_home = round(mean(HomeCorners), 1)
+  )
+
+prem_league_away <- football_matches_trimmed %>% 
+  filter(between(MatchDate, as.Date("2023-08-11"), as.Date("2024-05-19")), Division == "E0") %>% 
+  mutate(
+    Team = AwayTeam) %>% 
+  group_by(Team) %>% 
+  summarise(
+    away_win_pct = round((sum(FTResult == "A") / n()) * 100, 1),
+    avg_away_goals = round(mean(FTAway), 1),
+    avg_goals_conceded_away = round(mean(FTHome), 1),
+    avg_shots_away = round(mean(AwayShots), 1),
+    avg_shots_conceded_away = round(mean(HomeShots), 1),
+    avg_corners_away = round(mean(AwayCorners), 1)
+  )
+
+prem_league_teams <- prem_league_home %>% 
+  inner_join(prem_league_away, by = "Team") %>% 
+  select(Team, home_win_pct, away_win_pct, avg_home_goals, avg_away_goals, avg_goals_conceded_home, avg_goals_conceded_away, avg_shots_home, avg_shots_away, avg_shots_conceded_home, avg_shots_conceded_away, avg_corners_home, avg_corners_away)
+
+prem_league_teams %>% 
+  mutate(win_diff = home_win_pct - away_win_pct) %>%
+  mutate(
+    home_win_pct = cell_spec(home_win_pct, "html",
+      color = if_else(win_diff > 0, "darkgreen", 
+               if_else(win_diff < 0, "firebrick", "gray"))
+    ),
+    away_win_pct = cell_spec(away_win_pct, "html",
+      color = if_else(win_diff < 0, "darkgreen", 
+               if_else(win_diff > 0, "firebrick", "gray"))
+    )
+  ) %>% 
+  select(-win_diff) %>% 
+  rename(
+    "Home Win %" = home_win_pct,
+    "Away Win %" = away_win_pct,
+    "Avg Goals Home" = avg_home_goals,
+    "Avg Goals Away" = avg_away_goals,
+    "Avg Goals Conceded Home" = avg_goals_conceded_home,
+    "Avg Goals Conceded Away" = avg_goals_conceded_away,
+    "Avg Shots Home" = avg_shots_home,
+    "Avg Shots Away" = avg_shots_away,
+    "Avg Shots Conceded Home" = avg_shots_conceded_home,
+    "Avg Shots Conceded Away" = avg_shots_conceded_away,
+    "Avg Corners Home" = avg_corners_home,
+    "Avg Corners Away" = avg_corners_away
+  ) %>% 
+  kable(escape = FALSE, format = "html") %>% 
+  kable_styling(full_width = FALSE)
+```
+
+Most Premier League teams tend to perform better at home than away. Data consistently shows higher win percentages on home turf, accompanied by an increase in goals scored, shots taken, and corners earned. At the same time, these teams concede fewer goals and face fewer shots when playing at home.
+
+This suggests a more aggressive offensive posture and a more effective—or perhaps less-challenged—defensive setup at home. Whether it’s due to familiarity with the venue, crowd support, or travel fatigue affecting visiting teams, the overall performance differential is clear.
+
+With stronger attacking and defensive metrics at home, it’s reasonable to conclude that Premier League teams generally perform better in home matches. It will be interesting to investigate whether this pattern holds true in LaLiga and Serie A, the top divisions in Spain and Italy, respectively.
+
+## La Liga and Serie A Team Summary {.tabset}
+
+### La Liga
+```{r la_liga_teams}
+la_liga_home <- football_matches_trimmed %>% 
+  filter(between(MatchDate, as.Date("2023-08-11"), as.Date("2024-05-26")), Division == "SP1") %>% 
+  mutate(
+    Team = HomeTeam) %>% 
+  group_by(Team) %>% 
+  summarise(
+    home_win_pct = round((sum(FTResult == "H") / n()) * 100, 1),
+    avg_home_goals = round(mean(FTHome), 1),
+    avg_goals_conceded_home = round(mean(FTAway), 1),
+    avg_shots_home = round(mean(HomeShots), 1),
+    avg_shots_conceded_home = round(mean(AwayShots), 1),
+    avg_corners_home = round(mean(HomeCorners), 1)
+  )
+
+la_liga_away <- football_matches_trimmed %>% 
+  filter(between(MatchDate, as.Date("2023-08-11"), as.Date("2024-05-26")), Division == "SP1") %>% 
+  mutate(
+    Team = AwayTeam) %>% 
+  group_by(Team) %>% 
+  summarise(
+    away_win_pct = round((sum(FTResult == "A") / n()) * 100, 1),
+    avg_away_goals = round(mean(FTAway), 1),
+    avg_goals_conceded_away = round(mean(FTHome), 1),
+    avg_shots_away = round(mean(AwayShots), 1),
+    avg_shots_conceded_away = round(mean(HomeShots), 1),
+    avg_corners_away = round(mean(AwayCorners), 1)
+  )
+
+la_liga_teams <- la_liga_home %>% 
+  inner_join(la_liga_away, by = "Team") %>% 
+  select(Team, home_win_pct, away_win_pct, avg_home_goals, avg_away_goals, 
+         avg_goals_conceded_home, avg_goals_conceded_away, avg_shots_home, 
+         avg_shots_away, avg_shots_conceded_home, avg_shots_conceded_away, 
+         avg_corners_home, avg_corners_away)
+
+la_liga_teams %>% 
+  mutate(win_diff = home_win_pct - away_win_pct) %>%
+  mutate(
+    home_win_pct = cell_spec(home_win_pct, "html",
+      color = if_else(win_diff > 0, "darkgreen", 
+               if_else(win_diff < 0, "firebrick", "gray"))
+    ),
+    away_win_pct = cell_spec(away_win_pct, "html",
+      color = if_else(win_diff < 0, "darkgreen", 
+               if_else(win_diff > 0, "firebrick", "gray"))
+    )
+  ) %>% 
+  select(-win_diff) %>% 
+  rename(
+    "Home Win %" = home_win_pct,
+    "Away Win %" = away_win_pct,
+    "Avg Goals Home" = avg_home_goals,
+    "Avg Goals Away" = avg_away_goals,
+    "Avg Goals Conceded Home" = avg_goals_conceded_home,
+    "Avg Goals Conceded Away" = avg_goals_conceded_away,
+    "Avg Shots Home" = avg_shots_home,
+    "Avg Shots Away" = avg_shots_away,
+    "Avg Shots Conceded Home" = avg_shots_conceded_home,
+    "Avg Shots Conceded Away" = avg_shots_conceded_away,
+    "Avg Corners Home" = avg_corners_home,
+    "Avg Corners Away" = avg_corners_away
+  ) %>% 
+  kable(escape = FALSE, format = "html") %>% 
+  kable_styling(full_width = FALSE)
+```
+
+### Serie A
+```{r serie_a_teams}
+serie_a_home <- football_matches_trimmed %>% 
+  filter(between(MatchDate, as.Date("2023-08-20"), as.Date("2024-05-26")), Division == "I1") %>% 
+  mutate(
+    Team = HomeTeam) %>% 
+  group_by(Team) %>% 
+  summarise(
+    home_win_pct = round((sum(FTResult == "H") / n()) * 100, 1),
+    avg_home_goals = round(mean(FTHome), 1),
+    avg_goals_conceded_home = round(mean(FTAway), 1),
+    avg_shots_home = round(mean(HomeShots), 1),
+    avg_shots_conceded_home = round(mean(AwayShots), 1),
+    avg_corners_home = round(mean(HomeCorners), 1)
+  )
+
+serie_a_away <- football_matches_trimmed %>% 
+  filter(between(MatchDate, as.Date("2023-08-20"), as.Date("2024-05-26")), Division == "I1") %>% 
+  mutate(
+    Team = AwayTeam) %>% 
+  group_by(Team) %>% 
+  summarise(
+    away_win_pct = round((sum(FTResult == "A") / n()) * 100, 1),
+    avg_away_goals = round(mean(FTAway), 1),
+    avg_goals_conceded_away = round(mean(FTHome), 1),
+    avg_shots_away = round(mean(AwayShots), 1),
+    avg_shots_conceded_away = round(mean(HomeShots), 1),
+    avg_corners_away = round(mean(AwayCorners), 1)
+  )
+
+serie_a_teams <- serie_a_home %>% 
+  inner_join(serie_a_away, by = "Team") %>% 
+  select(Team, home_win_pct, away_win_pct, avg_home_goals, avg_away_goals, 
+         avg_goals_conceded_home, avg_goals_conceded_away, avg_shots_home, 
+         avg_shots_away, avg_shots_conceded_home, avg_shots_conceded_away, 
+         avg_corners_home, avg_corners_away)
+
+serie_a_teams %>% 
+  mutate(win_diff = home_win_pct - away_win_pct) %>%
+  mutate(
+    home_win_pct = cell_spec(home_win_pct, "html",
+      color = if_else(win_diff > 0, "darkgreen", 
+               if_else(win_diff < 0, "firebrick", "gray"))
+    ),
+    away_win_pct = cell_spec(away_win_pct, "html",
+      color = if_else(win_diff < 0, "darkgreen", 
+               if_else(win_diff > 0, "firebrick", "gray"))
+    )
+  ) %>% 
+  select(-win_diff) %>% 
+  rename(
+    "Home Win %" = home_win_pct,
+    "Away Win %" = away_win_pct,
+    "Avg Goals Home" = avg_home_goals,
+    "Avg Goals Away" = avg_away_goals,
+    "Avg Goals Conceded Home" = avg_goals_conceded_home,
+    "Avg Goals Conceded Away" = avg_goals_conceded_away,
+    "Avg Shots Home" = avg_shots_home,
+    "Avg Shots Away" = avg_shots_away,
+    "Avg Shots Conceded Home" = avg_shots_conceded_home,
+    "Avg Shots Conceded Away" = avg_shots_conceded_away,
+    "Avg Corners Home" = avg_corners_home,
+    "Avg Corners Away" = avg_corners_away
+  ) %>% 
+  kable(escape = FALSE, format = "html") %>% 
+  kable_styling(full_width = FALSE)
+```
+
+## 
+
+The trends observed among Premier League teams hold true across La Liga and Serie A, reinforcing the notion that clubs consistently perform better at home than away. With a solid sample spanning three of Europe’s top leagues, we can reasonably conclude that home advantage continues to influence team performance. While some first division leagues may not exhibit as strong a home record as their second division counterparts, the disparity in metrics—such as goals scored, shots taken, and win percentage, still shows teams posting significantly stronger statistics at home than on the road.
+
+### How Does Team Elo Impact Home Advantage?
+So far, our analysis confirms that home advantage is real—regardless of country, league, or division—and it measurably influences team performance. However, the strength of this advantage varies substantially across different football contexts. One noteworthy insight is that in European football, home advantage tends to be more pronounced in lower divisions compared to top-flight leagues.
+
+A working hypothesis is that dominant top-tier teams, especially those competing for titles or European qualification, possess significantly stronger squads relative to mid- and lower-table teams, which may dilute the impact of home advantage. To explore this further, we’ll introduce team Elo ratings—a numeric measure of team strength—and examine how Elo disparities align with match outcomes and performance indicators for home teams.
+
+To analyze team Elo ratings on a match-by-match basis, it's best to continue working with the `Matches` dataset. The `EloRatings` dataset updates team Elos only twice a week, which isn't granular enough for this analysis, especially since multiple matches can take place within a single week. Using the `Matches` dataset ensures that each game's Elo context is captured accurately.
+
+```{r elo_data_summary}
+football_matches_trimmed %>% 
+  group_by(Division) %>% 
+  summarise(
+    missing_home_elo = sum(is.na(HomeElo)),
+    missing_away_elo = sum(is.na(AwayElo))
+  ) %>% 
+  arrange(desc(missing_home_elo), desc(missing_away_elo)) %>% 
+  print(n = 38)
+```
+
+Based on available data, team Elo ratings have been consistently recorded since 2010 for four top-flight European leagues: the English Premier League, Bundesliga, Serie A, and La Liga. The French Ligue 1 also demonstrates reliable coverage, with only 19 rows missing Elo scores. Given this data integrity, we’ll limit our analysis to these five major competitions, collectively known as Europe’s "big five" leagues.
+
+This decision aligns well with our working hypothesis, which focuses on dominant teams outperforming weaker opponents—particularly within these major competitions.
+
+To begin, we'll conduct a general overview of how the away team's Elo rating relates to the likelihood of a home team victory across the four major European competitions: the Premier League, Bundesliga, Serie A, and La Liga.
+
+```{r home_win_pct_vs_elo}
+# Create new dataset for the four leagues with consistent Elo
+football_matches_elo <- football_matches_trimmed %>% 
+  filter(Division %in% c("E0", "D1", "I1", "SP1", "F1"), !is.na(AwayElo), !is.na(FTResult)) %>% 
+  mutate(
+    League = case_when(
+      Division == "E0"  ~ "Premier League",
+      Division == "D1"  ~ "Bundesliga",
+      Division == "I1"  ~ "Serie A",
+      Division == "SP1" ~ "LaLiga",
+      Division == "F1" ~ "Ligue 1"
+    )
+  ) %>% 
+  select(-Division)
+
+football_matches_elo %>%
+  ggplot(aes(x = AwayElo, y = as.numeric(FTResult == "H") * 100, color = League)) +
+  geom_smooth(method = "loess", se = FALSE) +
+  facet_wrap(~ League) +
+  labs(
+    title = "Home Win Rate vs Away Team Elo",
+    x = "Away Team Elo",
+    y = "Home Win Rate (%)",
+    caption = "Source: Football-Data.co.uk"
+  )
+```
+
+Across all five leagues, the visual shows a clear downward trend: as the Elo rating of the away team increases, the proportion of home wins consistently declines. This pattern suggests that stronger away teams weaken the home advantage, aligning neatly with our hypothesis. In other words, match outcomes become less dependent on venue and more influenced by team strength.
+
+Let’s explore this relationship from an alternative angle to further support our hypothesis, specifically, by examining how the home team’s win percentage changes relative to the difference in Elo ratings between the home and away teams. This approach highlights not just the away team’s strength, but the competitive balance, allowing us to assess whether a larger Elo gap consistently tilts the outcome in favor of the stronger side, regardless of venue.
+
+```{r elo_diff_vs_win_rate}
+football_matches_elo %>%
+  mutate(home_elo_diff = HomeElo - AwayElo) %>%
+  group_by(home_elo_diff, League) %>%
+  summarise(
+    avg_win_rate = mean(FTResult == "H") * 100,
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = home_elo_diff, y = avg_win_rate, color = League)) +
+  geom_smooth(method = "loess", se = FALSE) +
+  facet_wrap(~ League) +
+  labs(
+    title = "Win Rate vs Elo Difference",
+    subtitle = "How the difference between Home and Away Elo influences match outcomes",
+    x = "Home Elo − Away Elo",
+    y = "Average Home Win Rate (%)",
+    caption = "Source: Football-Data.co.uk"
+  )
+```
+
+The graph shows that when the away team is significantly stronger than the home team (i.e., a negative Elo difference), the likelihood of a home win drops noticeably. As the Elo ratings of both teams become more evenly matched, win rates trend toward 50%. Interestingly, most leagues show a win rate slightly below 50% in these evenly matched scenarios—possibly due to dominant teams skewing the average downward. When the home team holds a stronger Elo rating (positive difference), the win rate climbs steadily, reinforcing the connection between relative team strength and match outcomes.
+
+This observation suggests that narrower Elo disparities may help explain why the second-tier counterparts of the “Big Five” leagues exhibit stronger home records. To investigate this further, we’ll analyze how team Elo ratings were distributed during the 2023/24 season—comparing both the top-flight leagues and their respective second divisions across Europe’s major competitions.
+
+```{r div_1_vs_div_2}
+league_team_elo <- football_matches_trimmed %>% 
+  filter(Division %in% c("E0", "D1", "I1", "SP1", "F1", "E1", "D2", "I2", "SP2", "F2"), 
+         !is.na(AwayElo), 
+         !is.na(FTResult)) %>% 
+  mutate(
+    League = case_when(
+      Division == "E0"  ~ "Premier League",
+      Division == "D1"  ~ "Bundesliga",
+      Division == "I1"  ~ "Serie A",
+      Division == "SP1" ~ "LaLiga",
+      Division == "F1" ~ "Ligue 1",
+      Division == "E1" ~ "EFL Championship",
+      Division == "D2" ~ "2. Bundesliga",
+      Division == "I2" ~ "Serie B",
+      Division == "SP2" ~ "LaLiga 2",
+      Division == "F2" ~ "Ligue 2"
+    ),
+    Country = case_when(
+      League %in% c("Premier League", "EFL Championship") ~ "England",
+      League %in% c("Bundesliga", "2. Bundesliga") ~ "Germany",
+      League %in% c("Serie A", "Serie B") ~ "Italy",
+      League %in% c("LaLiga", "LaLiga 2") ~ "Spain",
+      League %in% c("Ligue 1", "Ligue 2") ~ "France"
+    )
+  ) %>% 
+  select(-Division)
+
+avg_home_elo <- league_team_elo %>%
+  filter(between(MatchDate, as.Date("2023-07-28"), as.Date("2024-05-31"))) %>%
+  group_by(HomeTeam, League, Country) %>%
+  summarise(mean_home_elo = round(mean(HomeElo)), .groups = "drop")
+
+avg_away_elo <- league_team_elo %>%
+  filter(between(MatchDate, as.Date("2023-08-01"), as.Date("2024-05-31"))) %>%
+  group_by(AwayTeam, League, Country) %>%
+  summarise(mean_away_elo = round(mean(AwayElo)), .groups = "drop")
+
+avg_team_elo <- full_join(
+  avg_home_elo %>% rename(Team = HomeTeam),
+  avg_away_elo %>% rename(Team = AwayTeam),
+  by = c("Team", "League", "Country")
+) %>%
+  mutate(mean_team_elo = round(
+    rowMeans(select(., mean_home_elo, mean_away_elo), na.rm = TRUE)
+  ))
+
+ggplot(avg_team_elo, aes(x = "", y = mean_team_elo)) +
+  geom_boxplot(aes(fill = League)) +
+  coord_flip() +
+  facet_wrap(~ Country, scales = "free_x") +
+  labs(
+    title = "Team Elo Distribution (Grouped by Country)",
+    x = "",
+    y = "Mean Team Elo",
+    caption = "Source: Football-Data.co.uk"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+```
+
+At first glance, it's clear that top-flight teams generally have higher Elo ratings than their second-division counterparts. More interestingly, in most countries, first division leagues also exhibit a wider spread of Elo scores, reflected in the broader box widths in the plots. This suggests that within top divisions, the gap between low-mid and high-mid table teams is larger, indicating less competitive balance compared to the second tiers.
+
+Germany presents a fascinating exception. The Bundesliga box is narrower than that of the 2. Bundesliga, implying tighter clustering around the median. However, the Bundesliga’s right whisker, representing values beyond the 75th percentile, is significantly longer. This signals that while mid-table teams in the Bundesliga may be close in strength, the elite clubs are substantially stronger, pulling the upper tail outward and highlighting a pronounced disparity.
+
+This pattern (longer right whiskers) is visible across other top-flight leagues too, where dominant teams stretch the upper Elo range. In contrast, the second divisions tend to have more compressed distributions, lacking overpowering outliers.
+
+This dynamic provides a strong explanation for why home advantage tends to be more pronounced in second division football. Without dominant clubs that consistently win regardless of venue, match outcomes become more sensitive to contextual factors—home advantage included.
+
+Hence, we observe a direct correlation between Elo ratings and the likelihood of a home team winning. As the gap between a home team's Elo and that of their opponent increases—particularly when the opponent is significantly stronger—the probability of a home win decreases, diminishing the effect of home advantage. This relationship scales up at the league level: in top divisions, where the disparity in Elo between strong and weak teams is often larger, the influence of home advantage is relatively muted. In contrast, second divisions, with tighter Elo distributions and fewer overpowering teams, tend to exhibit a more pronounced home advantage.
+
+### The Power of the Home Crowd
+There are many factors that may contribute to a team performing better at home: the familiarity of the pitch, reduced travel fatigue, even the psychological comfort of being in a known environment. But none are quite as iconic, or emotionally charged, as the home crowd. Fans who live and breathe for their team, pouring their energy into chants and cheers from the stands, are often seen as the heartbeat of home advantage.
+
+There’s something undeniably uplifting about playing in front of tens of thousands of passionate supporters. Their presence can energize players, boost morale, and sharpen focus. On the flip side, walking into an unfamiliar stadium where the crowd cheers for the opposition—and boos at you—can feel isolating, even deflating. The emotional contrast between home and away environments speaks to the deeper psychological forces behind home advantage.
+
+This romantic view of the crowd’s influence is powerful, but is it more than just narrative? It’s time to test whether the roar of the home fans truly shifts performance—or if it's just part of the football mythos.
+
+#### Impact of COVID-19
+Football was far from immune to the impact of COVID-19. It was, in fact, profoundly disrupted. Strict health protocols were enforced throughout the 2020/21 season, and it wasn’t uncommon for players to miss matches due to protocol violations or positive tests. But perhaps the most visible change was the absence of fans. Stadiums were either closed entirely to spectators or, in later stages of the season, allowed limited attendance, capped at somewhere between 5% and 30% capacity depending on the league.
+
+This unprecedented situation offers a unique opportunity to examine the true influence of the home crowd. With passionate supporters suddenly removed from the equation, we can begin to isolate and assess how much the energy and presence of home fans really contribute to team performance.
+
+Let’s examine three key seasons to assess the impact of crowd presence on home advantage: the 2018/19 season, which preceded the COVID-19 outbreak and featured full-capacity stadiums; the 2020/21 season, played largely behind closed doors or with severely restricted attendance; and the 2022/23 season, when stadiums returned to normal capacity and fan dynamics resumed in full.
+
+```{r HA_covid_season}
+league_names_COVID <- league_names %>%
+  mutate(
+    Season = case_when(
+      MatchDate >= as.Date("2018-07-15") & MatchDate <= as.Date("2019-06-01") ~ "2018/19",
+      MatchDate >= as.Date("2020-07-15") & MatchDate <= as.Date("2021-06-01") ~ "2020/21",
+      MatchDate >= as.Date("2022-07-15") & MatchDate <= as.Date("2023-06-01") ~ "2022/23",
+      TRUE ~ NA_character_  # handle dates that don't match any range
+    )
+  ) %>%
+  filter(!is.na(Season))
+
+COVID_overview <- league_names_COVID %>% 
+  group_by(League, Season) %>% 
+  summarise(            # Create the summary table
+    total_matches = n(),
+    home_wins = sum(FTResult == "H", na.rm = TRUE),
+    win_pct = round((home_wins / total_matches) * 100, 1),
+  )
+
+COVID_overview %>% 
+  filter(League %in% c("Premier League (ENG 1)",
+                       "EFL Championship (ENG 2)",
+                       "Bundesliga (DEU 1)",
+                       "2. Bundesliga (DEU 2)",
+                       "Serie A (ITA 1)",
+                       "Serie B (ITA 2)",
+                       "LaLiga (ESP 1)",
+                       "LaLiga 2 (ESP 2)",
+                       "Ligue 1 (FRA 1)",
+                       "Ligue 2 (FRA 2)",
+                       "Liga MX (MEX 1)",
+                       "Primera Division (ARG 1)",
+                       "Serie A (BRA 1)",
+                       "MLS (USA 1)")) %>% 
+  mutate(
+    region_tier = case_when(
+      League %in% c("Premier League (ENG 1)", "Bundesliga (DEU 1)", "Serie A (ITA 1)", 
+                    "LaLiga (ESP 1)", "Ligue 1 (FRA 1)") ~ "Europe First Division",
+      League %in% c("EFL Championship (ENG 2)", "2. Bundesliga (DEU 2)",
+                    "Serie B (ITA 2)", "LaLiga 2 (ESP 2)", "Ligue 2 (FRA 2)") ~ "Europe Second Division",
+      League %in% c("Liga MX (MEX 1)", "Primera Division (ARG 1)", "Serie A (BRA 1)",
+                    "MLS (USA 1)") ~ "Americas First Division")
+  ) %>% 
+  ggplot(aes(x = Season, y = win_pct, group = League)) +
+  geom_line(aes(color = League), size = 0.6) +
+  facet_wrap(~ region_tier) +
+  geom_point(aes(color = League), size = 1.5) +
+  geom_text_repel(
+    data = . %>% filter(Season == "2022/23"),
+    aes(label = League, color = League),
+    size = 2.5,
+    nudge_x = 0.5
+  ) +
+  scale_x_discrete(expand = expansion(mult = c(0.05, 0.3))) +
+  labs(
+    title = "Home Win Percentage Across Seasons by League",
+    x = "Season",
+    y = "Home Win %",
+    color = "League"
+  ) +
+  theme(panel.grid.minor = element_blank()) +
+  guides(color = "none")
+```
+
+The visual paints a compelling story of how COVID-19 impacted home-field advantage across global football leagues. Broadly, we observe three distinct patterns:
+
+**1. V-Shaped Recovery Leagues:** 
+Many leagues experienced a dip in home win rates during the COVID-affected season, followed by a rebound toward pre-pandemic levels in subsequent seasons. This classic V-shaped trend is visible in leagues like Italy's Serie A, Germany's Bundesliga, and Spain's LaLiga — suggesting that these competitions were resilient to short-term disruptions.
+
+**2. Pandemic-Boosted Leagues:**
+Interestingly, certain leagues saw an increase in home win percentages during the pandemic. French Ligue 2 and Germany’s 2. Bundesliga are notable examples. This may point to structural or tactical adaptations that allowed home teams to thrive despite the lack of fan support — perhaps aided by travel logistics or familiarity with stadiums under silent conditions.
+
+**3. Lingering Decline Leagues:**
+In contrast, a few leagues seem to have experienced a lasting reduction in home advantage. Mexico’s Liga MX and England’s Premier League show a continued drop from pre-COVID levels, suggesting that pandemic-era disruptions may have catalyzed longer-term shifts in competitive dynamics.
+
+This variability implies that COVID's impact on home advantage wasn't monolithic. Beyond empty stadiums, factors like league structure, scheduling, and geographic travel may have shaped these diverging trends. The takeaway? Home-field advantage is more dynamic, and fragile, than we might assume.
+
+### Referee Bias
+Home advantage is far more nuanced than it initially appears. While factors like crowd support and player familiarity with the stadium are well-known contributors, another subtle but significant influence is the referee. In theory, referees should be impartial arbiters of the game. Yet in practice, the pressure exerted by a vocal home crowd may subconsciously sway their decisions — particularly when it comes to fouls or card sanctions. This layer of psychological bias adds complexity to how we understand home advantage. Let's take a closer look at how referee behavior might reinforce or undermine the host team's edge.
+
+First, let's examine the completeness of foul data across the 38 available leagues:
+
+```{r foul_data}
+football_matches_trimmed %>%
+  filter(MatchDate > is.Date("2015-01-01")) %>% 
+  group_by(Division) %>%
+  summarise(missing_fouls = sum(is.na(HomeFouls) + is.na(AwayFouls))) %>%
+  arrange(desc(missing_fouls)) %>%
+  print(n = 38)
+```
+
+Since consistent foul documentation is primarily available for the “Big 5” European football leagues over the past decade, our analysis of referee bias will center on those competitions. These leagues — the Premier League, La Liga, Bundesliga, Serie A, and Ligue 1 — offer reliable data on foul calls, card sanctions, and match conditions, allowing for more rigorous cross-league comparison and pattern recognition. By narrowing our scope, we can more confidently assess how referees may contribute to home advantage under different cultural and structural contexts.
+
+```{r fouls_per_division}
+match_fouls <- football_matches_trimmed %>% 
+  filter(between(MatchDate, as.Date("2015-07-15"), as.Date("2025-05-31")),
+         Division %in% c("E0", "I1", "D1", "SP1", "F1")) %>% 
+  select(Division, MatchDate, HomeFouls, AwayFouls, HomeYellow, AwayYellow, HomeRed, AwayRed)
+
+match_fouls %>% 
+  rename("League" = Division) %>% 
+  group_by(League) %>% 
+  mutate(League = case_when(
+    League == "E0" ~ "Premier League",
+    League == "I1" ~ "Serie A",
+    League == "D1" ~ "Bundesliga",
+    League == "SP1" ~ "LaLiga",
+    League == "F1" ~ "Ligue 1"),
+    across(c(HomeFouls, AwayFouls, HomeYellow, AwayYellow, HomeRed, AwayRed), ~    replace_na(., 0)))%>% 
+  summarise(
+    foul_diff = mean(HomeFouls) - mean(AwayFouls),
+    avg_home_fouls = mean(HomeFouls),
+    avg_away_fouls = mean(AwayFouls),
+    avg_home_yellows = mean(HomeYellow),
+    avg_away_yellows = mean(AwayYellow),
+    avg_home_reds = mean(HomeRed),
+    avg_away_reds = mean(AwayRed)
+  ) %>% 
+  arrange(desc(foul_diff)) %>% 
+  kable(col.names = c("League", "Foul Difference (Home - Away)", "Avg Home Fouls",
+        "Avg Away Fouls", "Avg Home Yellows", "Avg Away Yellows",
+        "Avg Home Reds", "Avg Away Reds"))
+```
+
+The data suggests that referees tend to penalize away teams slightly more across major leagues, except in Spain’s LaLiga, where, since 2015, referees have on average awarded more fouls against the home side than their visiting rivals. While intriguing, this pattern alone doesn’t confirm referee bias; it could simply reflect a genuine difference in team behavior, with away sides being more aggressive or home teams more disciplined. A more revealing approach would be to examine how these figures shifted during the COVID period, when matches were played without crowds. Comparing foul patterns across pre-COVID, COVID-era, and post-COVID games can offer valuable insight into the extent to which home crowd pressure influences refereeing decisions.
+
+```{r referee_bias_time_period}
+match_fouls %>% 
+  rename("League" = Division) %>%
+  mutate(
+    time_period = case_when(    # Create time periods to analyze COVID impact
+      MatchDate < as.Date("2020-03-01") ~ "Pre-COVID",
+      between(MatchDate, as.Date("2020-03-01"), as.Date("2021-05-31")) ~ "COVID",
+      MatchDate > as.Date("2021-07-15") ~ "Post-COVID"
+    ),
+    # Order the time periods to be chronological instead of alphabetic
+    time_period = factor(time_period, levels = c("Pre-COVID", "COVID", "Post-COVID")),
+    League = case_when(
+      League == "E0" ~ "Premier League",
+      League == "I1" ~ "Serie A",
+      League == "D1" ~ "Bundesliga",
+      League == "SP1" ~ "LaLiga",
+      League == "F1" ~ "Ligue 1"
+    ),
+    # For fouls and cards given, na values should be 0
+    across(c(HomeFouls, AwayFouls, HomeYellow, AwayYellow, HomeRed, AwayRed), ~replace_na(., 0))
+  ) %>%
+  group_by(League, time_period) %>%
+  summarise(
+    foul_diff = mean(HomeFouls) - mean(AwayFouls),
+    yellow_diff = mean(HomeYellow) - mean(AwayYellow),
+    red_diff = mean(HomeRed) - mean(AwayRed),
+  ) %>%
+  pivot_longer(cols = ends_with("_diff"), names_to = "metric", values_to = "difference") %>%
+  ggplot(aes(x = time_period, y = League, fill = difference)) +
+  geom_tile(color = "white") +
+  facet_wrap(~ metric, labeller = labeller(    # Re-label facet headings
+    metric = c(
+      foul_diff = "Foul Difference",
+      yellow_diff = "Yellow Card\nDifference",
+      red_diff = "Red Card \nDifference"
+    ))
+    )+
+  scale_fill_gradientn(     # I made a custom scale since red cards per game are very few
+    colours = c("#67001f", "#b2182b", "#d6604d", "#f4a582", "#f7f7f7", 
+                "#92c5de", "#4393c3", "#2166ac", "#053061"),
+    values = scales::rescale(c(-0.5, -0.1, -0.05, 0, 0.05, 0.1, 0.5)),
+    limits = c(-0.5, 0.5),
+    oob = scales::squish,
+    guide = guide_colorbar(
+      barwidth = unit(1, "cm"),
+      barheight = unit(2, "cm"),
+      title.position = "top",   
+      title.hjust = 0.5,         
+      label.position = "right"   
+    )
+  ) +
+  labs(
+    title = "Card & Foul Differences by League and COVID Period",
+    subtitle = "Positive values favor away teams; negative values favor home teams",
+    x = NULL,
+    y = NULL,
+    fill = "Difference"
+  ) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+    strip.text = element_text(face = "bold", size = 11, margin = margin(t = 5, b = 5)),
+  )
+
+```
+
+The change in referee behavior is evident. Before COVID, all of the Big 5 leagues showed a consistent bias against away teams, with higher counts of fouls, yellow cards, and red cards. This suggests a crowd-induced home advantage in officiating. However, during the COVID period, when stadiums were empty, this trend shifted — particularly for fouls. In all leagues except the Bundesliga, referees began penalizing home teams more frequently, implying that the absence of crowd pressure reduced unconscious favoritism.
+
+While yellow cards showed more subtle changes, the distribution became more even. In Ligue 1 and Serie A, away teams were actually penalized more, a reversal from pre-COVID trends. The Premier League, LaLiga, and the Bundesliga maintained home-team favoritism, though with smaller margins.
+
+Red cards showed the least disruption. Pre-COVID, away teams were more likely to receive reds across all leagues. That bias lessened slightly during COVID but didn't disappear,  except in LaLiga, which managed to reach a neutral state.
+
+One outlier was the Bundesliga, which remained consistent in penalizing away teams more throughout all three periods. Even during COVID, referees continued to give more fouls and cards to away teams, though the disparity was somewhat reduced.
+
+Following the return of crowds, trends generally reverted: referees began favoring home teams again. Yet LaLiga remained fascinatingly distinct. Even before COVID, LaLiga was the most neutral in foul calls, with a margin close to zero. During COVID, that balance flipped, favoring away teams. Surprisingly, post-COVID, referees have continued to penalize home teams more for fouls, bucking the general trend. That said, the distribution of yellow and red cards reverted to favoring home teams once again.
+
+A notable evolution across all leagues, except the Bundesliga, was in red card neutrality. Historically skewed against away teams, red cards became more evenly distributed post-COVID. This may be attributed to the increasing influence of VAR, which operates independently of crowd dynamics and can overturn emotionally driven decisions made in the heat of live matches.
+
+### Conclusion
+The data analyzed throughout this study provides compelling evidence that home teams tend to perform better when playing at home than away, highlighting that *home advantage is real, measurable, and context-dependent*. While the magnitude of this edge fluctuates across countries, leagues, and match conditions, the recurring trends point to several influential factors:
+
+* **Most teams perform better at home than away.** Not only do they have a higher win % at home, but as we explored in the Premier League, Serie A, and LaLiga, teams also tend to have better attacking and defending statistics at home than away. That means, scoring more goals, having more shots at goal, and having a greater offensive presence marked by a higher amount of corners on the offensive side, and receving fewer goals and shots on the defensive side. 
+
+* **The extent of home advantage varies across countries and leagues.** Home advantage appears strongest in the United States, Brazil, and Spain when measured by outright win rates. However, when we shift the lens toward undefeated outcomes, matches where the home team avoids defeat, Argentina rises notably in the rankings. This variation highlights that league structure and tactical playstyle across countries fundamentally shape how home advantage manifests, whether through aggressive dominance or resilient defense. 
+
+* **Team strength influences the impact of home advantage.** Leagues with relatively balanced teams across the board saw higher home win rates. Conversely, top-tier leagues with elite outlier teams (like the Premier League) showed a diluted home effect, since stronger teams can dominate regardless of venue. When a visiting team is significantly stronger, the home side’s likelihood of winning or drawing drops markedly.
+
+* **Crowd presence is an important factor of home advantage**. The sharp decline in home team performance during crowdless COVID-19 matches, followed by a resurgence once fans returned, offers compelling evidence that crowd presence isn't just symbolic; it actively enhances the likelihood of a home team winning. The atmosphere, pressure, and psychological lift provided by supporters appear to be integral components of home-field advantage.
+
+* **Referees tend to favor home sides**. Across Europe's "Big 5" leagues, home teams were penalized less frequently, with this trend reversing during the spectator-less COVID period. This suggests that officiating may be subtly swayed by crowd pressure and atmosphere.
+
+These findings show that home advantage is shaped by structural, psychological, and competitive forces — not just superstition or tradition. The precise weight of each factor (venue familiarity, crowd intensity, referee behavior) warrants deeper modeling to quantify their individual impact.
+
+For clubs, analysts, and league organizers, understanding the architecture of home advantage can inform strategic decisions: from optimizing stadium environments to refining game plans based on opponent strength and home dynamics. In the end, our results affirm what fans instinctively know: when everything aligns, there's truly no place like home.
+
+
